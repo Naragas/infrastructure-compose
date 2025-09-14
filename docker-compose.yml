@@ -1,0 +1,154 @@
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    container_name: postgres_microservice_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${PG_OUTSIDE_PORT}:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - msnet
+
+  zookeeper:
+    image: ${ZOOKEEPER_IMAGE}
+    container_name: zookeeper_microservice
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "${ZOOKEEPER_PORT}:2181"
+    networks:
+      - msnet
+
+  kafka:
+    image: ${KAFKA_IMAGE}
+    container_name: kafka_microservice
+    depends_on:
+      - zookeeper
+    ports:
+      - "${KAFKA_OUTSIDE_PORT}:9092"
+    healthcheck:
+      test: [ "CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 | grep id || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: ${KAFKA_AUTO_CREATE_TOPICS_ENABLE}
+    networks:
+      - msnet
+
+  config-service:
+    image: ${CONFIG_IMAGE}
+    container_name: config-service
+    environment:
+      SPRING_PROFILES_ACTIVE: git
+      SPRING_CLOUD_CONFIG_SERVER_GIT_URI: ${CONFIG_GIT_URI}
+      SPRING_CLOUD_CONFIG_SERVER_GIT_DEFAULT_LABEL: ${CONFIG_GIT_BRANCH}
+    ports:
+      - "${CONFIG_PORT}:8888"
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8888/actuator/health" ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      - msnet
+
+  discovery-service:
+    image: ${DISCOVERY_IMAGE}
+    container_name: discovery-service
+    depends_on:
+      config-service:
+        condition: service_healthy
+    environment:
+      SPRING_CONFIG_IMPORT: ${SPRING_CONFIG_IMPORT}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+    ports:
+      - "${DISCOVERY_PORT}:8761"
+    healthcheck:
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8761/actuator/health" ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    networks:
+      - msnet
+
+  user-service:
+    image: ${USER_IMAGE}
+    container_name: user-service
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      config-service:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_CLIENT_SERVICEURL_DEFAULTZONE}
+      SPRING_CONFIG_IMPORT: ${SPRING_CONFIG_IMPORT}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB}
+      SPRING_DATASOURCE_USERNAME: ${POSTGRES_USER}
+      SPRING_DATASOURCE_PASSWORD: ${POSTGRES_PASSWORD}
+      SPRING_JPA_HIBERNATE_DDL_AUTO: ${SPRING_JPA_HIBERNATE_DDL_AUTO}
+    ports:
+      - "${USER_PORT}:8080"
+    networks:
+      - msnet
+
+  notification-service:
+    image: ${NOTIFICATION_IMAGE}
+    container_name: notification-service
+    depends_on:
+      kafka:
+        condition: service_healthy
+      config-service:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_CLIENT_SERVICEURL_DEFAULTZONE}
+      SPRING_CONFIG_IMPORT: ${SPRING_CONFIG_IMPORT}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+    ports:
+      - "${NOTIFY_PORT}:8080"
+    networks:
+      - msnet
+
+
+  gateway-service:
+    image: ${GATEWAY_IMAGE}
+    container_name: gateway-service
+    depends_on:
+      config-service:
+        condition: service_healthy
+      discovery-service:
+        condition: service_healthy
+    environment:
+      EUREKA_CLIENT_SERVICEURL_DEFAULTZONE: ${EUREKA_CLIENT_SERVICEURL_DEFAULTZONE}
+      SPRING_CONFIG_IMPORT: ${SPRING_CONFIG_IMPORT}
+      SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE}
+    ports:
+      - "${GATEWAY_PORT}:8080"
+    networks:
+      - msnet
+networks:
+  msnet:
+    driver: bridge
